@@ -1,22 +1,25 @@
 package com.github.johnynek.bazel_deps
 
 import java.security.MessageDigest
-import java.io.{ File, FileInputStream }
+import java.io.{File, FileInputStream}
+import java.net.URI
 import java.nio.file.Path
 import java.util
 import org.apache.maven.repository.internal.MavenRepositorySystemUtils
 import org.eclipse.aether.RepositorySystem
 import org.eclipse.aether.artifact.DefaultArtifact
-import org.eclipse.aether.collection.{ CollectRequest, CollectResult }
+import org.eclipse.aether.collection.{CollectRequest, CollectResult}
 import org.eclipse.aether.connector.basic.BasicRepositoryConnectorFactory
-import org.eclipse.aether.graph.{ Dependency, DependencyNode, DependencyVisitor, Exclusion }
+import org.eclipse.aether.graph.{Dependency, DependencyNode, DependencyVisitor, Exclusion}
 import org.eclipse.aether.impl.DefaultServiceLocator
-import org.eclipse.aether.repository.{ LocalRepository, RemoteRepository, RepositoryPolicy }
-import org.eclipse.aether.resolution.{ ArtifactResult, ArtifactRequest }
+import org.eclipse.aether.repository._
+import org.eclipse.aether.resolution.{ArtifactRequest, ArtifactResult}
 import org.eclipse.aether.spi.connector.RepositoryConnectorFactory
 import org.eclipse.aether.spi.connector.transport.TransporterFactory
 import org.eclipse.aether.transport.file.FileTransporterFactory
 import org.eclipse.aether.transport.http.HttpTransporterFactory
+import org.eclipse.aether.internal.impl.Maven2RepositoryLayoutFactory
+import org.eclipse.aether.internal.impl.EnhancedLocalRepositoryManagerFactory
 import scala.collection.JavaConverters._
 import scala.util.{Failure, Success, Try}
 import scala.util.control.NonFatal
@@ -46,6 +49,7 @@ class Resolver(servers: List[MavenServer], resolverCachePath: Path) {
   private val session = {
     val s = MavenRepositorySystemUtils.newSession()
     val localRepo = new LocalRepository(resolverCachePath.toString)
+//    s.setLocalRepositoryManager(new EnhancedLocalRepositoryManagerFactory().newInstance(s, localRepo))
     s.setLocalRepositoryManager(system.newLocalRepositoryManager(s, localRepo))
     s
   }
@@ -57,6 +61,25 @@ class Resolver(servers: List[MavenServer], resolverCachePath: Path) {
         .setPolicy(new RepositoryPolicy(true, RepositoryPolicy.UPDATE_POLICY_DAILY, RepositoryPolicy.CHECKSUM_POLICY_IGNORE))
         .build
     }.asJava
+
+  private val idToRepository = {
+    repositories.asScala.map { repository =>
+      repository.getId -> repository
+    }.toMap
+
+  }
+  private val localRepositoryId = session.getLocalRepository.getId
+
+  private def getRemoteRepository(artifactResult: ArtifactResult): RemoteRepository = {
+    val id = artifactResult.getRepository.getId
+
+    if (id == localRepositoryId) {
+      val localRequest = new LocalArtifactRequest(artifactResult.getArtifact, repositories, null)
+      session.getLocalRepositoryManager.find(session, localRequest).getRepository
+    } else {
+      idToRepository(id)
+    }
+  }
 
   /**
    * Here is where the IO happens
@@ -74,42 +97,71 @@ class Resolver(servers: List[MavenServer], resolverCachePath: Path) {
     system.collectDependencies(session, collectRequest);
   }
 
-  def getShas(m: Iterable[MavenCoordinate]): Map[MavenCoordinate, Try[ResolvedSha1Value]] = {
-    /**
-     * We try to request the jar.sha1 file, if that fails, we request the jar
-     * and do the sha1.
-     */
-    def toArtifactRequest(m: MavenCoordinate, extension: String): ArtifactRequest = {
-      val classifier = null // We don't use this
-      val art = new DefaultArtifact(
-        m.group.asString, m.artifact.asString, classifier, extension, m.version.asString)
+  /**
+   * Get shas and urls for artifacts
+   */
+  def getCoordinateInfo(
+    m: Iterable[MavenCoordinate],
+    extension: String,
+    classifier: Option[String] = None
+  ): Map[MavenCoordinate, Try[JarInfo]] = {
+    def toArtifactRequest(m: MavenCoordinate, extension: String, classifier: Option[String]): ArtifactRequest = {
       val context = null
-      new ArtifactRequest(art, repositories, context)
+      new ArtifactRequest(m.toArtifact(extension, classifier), repositories, context)
     }
 
-    def liftKeys[K, V](ms: Iterable[K],
-      tmap: Try[Map[K, Try[V]]]): Map[K, Try[V]] =
-      ms.map { coord => coord -> tmap.flatMap(_(coord)) }.toMap
+    def liftKeys[K, V](
+      mavenCoordinates: Iterable[K],
+      tmap: Try[Map[K, Try[V]]]
+    ): Map[K, Try[V]] = {
+      mavenCoordinates.map { coord =>
+        coord -> tmap.flatMap(_ (coord))
+      }.toMap
+    }
 
-    def getExt(ms: Seq[MavenCoordinate], ext: String)(toSha: File => Try[Sha1Value]): Map[MavenCoordinate, Try[ResolvedSha1Value]] =
-      liftKeys(ms, Try {
-        val resp =
-          system.resolveArtifacts(session,
-            ms.map(toArtifactRequest(_, ext)).toList.asJava)
-            .asScala
-            .iterator
+    def getExt(
+      mavenCoordinates: Seq[MavenCoordinate],
+      ext: String,
+      classifier: Option[String]
+    )(
+      toSha: File => Try[Sha256Value]
+    ): Map[MavenCoordinate, Try[JarInfo]] = {
 
-        ms.iterator.zip(resp).map { case (coord, r) =>
-          coord -> getFile(coord, ext, r).flatMap(f => toSha(f).map(sha1Value => ResolvedSha1Value(sha1Value, r.getRepository.getId)))
-        }.toMap
-      })
+      liftKeys(
+        mavenCoordinates,
+        Try {
+          val artifactResults = mavenCoordinates.map { coordinate =>
+            Try {
+              system.resolveArtifact(
+                session,
+                toArtifactRequest(coordinate, ext, classifier)
+              )
+            }
+          }
 
-    val shas = getExt(m.toList, "jar.sha1")(readShaContents)
-    val computes =
-      getExt(shas.collect { case (m, Failure(_)) => m }.toList, "jar")(computeShaOf)
+          mavenCoordinates.zip(artifactResults).collect { case (coord, Success(result)) =>
+            val info = getFile(coord, ext, result)
+              .flatMap { file =>
+                toSha(file).map { sha256Value =>
+                  val layoutFactory = new Maven2RepositoryLayoutFactory
+                  val repository = getRemoteRepository(result)
+                  val repositoryLayout = layoutFactory.newInstance(session, getRemoteRepository(result))
+                  val artifactPath = repositoryLayout.getLocation(result.getArtifact, false)
+                  val artifactURI = URI.create(repository.getUrl).resolve(artifactPath)
 
-    shas ++ computes
+                  JarInfo(Set(artifactURI), sha256Value)
+                }
+              }
+
+            coord -> info
+          }.toMap
+        }
+      )
+    }
+
+    getExt(m.toList, extension, classifier)(computeShaOf)
   }
+
   private def getFile(m: MavenCoordinate, ext: String, a: ArtifactResult): Try[File] =
     a.getArtifact match {
       case null => Failure(ResolveFailure("null artifact", m, ext, a.getExceptions.asScala.toList))
@@ -121,23 +173,8 @@ class Resolver(servers: List[MavenServer], resolverCachePath: Path) {
         else Success(f)
     }
 
-  private def readShaContents(f: File): Try[Sha1Value] =
-    Model.readFile(f).flatMap { str =>
-      val hexString = str
-          .split("\\s") // some files have sha<whitespace>filename
-          .dropWhile(_.isEmpty)
-          .head
-          .trim
-          .toLowerCase
-      if (hexString.length == 40 && hexString.matches("[0-9A-Fa-f]*")) {
-        Success(Sha1Value(hexString))
-      } else {
-        Failure(new Exception(s"string: $hexString, not a valid SHA1"))
-      }
-    }
-
-  private def computeShaOf(f: File): Try[Sha1Value] = Try {
-    val sha = MessageDigest.getInstance("SHA-1")
+  private def computeShaOf(f: File): Try[Sha256Value] = Try {
+    val sha = MessageDigest.getInstance("SHA-256")
     val fis = new FileInputStream(f)
     try {
       var n = 0;
@@ -146,7 +183,7 @@ class Resolver(servers: List[MavenServer], resolverCachePath: Path) {
         n = fis.read(buffer)
         if (n > 0) sha.update(buffer, 0, n)
       }
-      Success(Sha1Value(sha.digest.map("%02X".format(_)).mkString.toLowerCase))
+      Success(Sha256Value(sha.digest.map("%02X".format(_)).mkString.toLowerCase))
     }
     catch {
       case NonFatal(err) => Failure(err)

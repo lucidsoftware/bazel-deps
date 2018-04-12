@@ -9,7 +9,12 @@ case class Label(workspace: Option[String], path: Path, name: String) {
     else {
       val ws = workspace.fold("") { nm => s"@$nm" }
       path.parts match {
-        case Nil => s"$ws//$nmPart"
+        case Nil =>
+          if (nmPart.isEmpty) {
+            s"$ws"
+          } else {
+            s"$ws//$nmPart"
+          }
         case ps => ps.mkString(s"$ws//", "/", s"$nmPart")
       }
     }
@@ -25,11 +30,13 @@ object Label {
     val target = pathAndTarg.drop(1 + pathStr.length)
     Label(ws, Path(pathStr.split('/').toList), target)
   }
-  def externalJar(lang: Language, u: UnversionedCoordinate, np: NamePrefix): Label = lang match {
-    case Language.Java => Label(Some(u.toBazelRepoName(np)), Path(List("jar")), "")
+  def externalJar(lang: Language, u: UnversionedCoordinate, np: NamePrefix): Label =
+    Label(Some(u.toBazelRepoName(np)), Path(Nil), "")
+//    lang match {
+//    case Language.Java => Label(Some(u.toBazelRepoName(np)), Path(List("jar")), "")
     // If we know we have a scala jar, just use ":file" to be sure we can deal with macros
-    case Language.Scala(_, _) => Label(Some(u.toBazelRepoName(np)), Path(List("jar")), "file")
-  }
+//    case Language.Scala(_, _) => Label(Some(u.toBazelRepoName(np)), Path(List("jar")), "file")
+//  }
 
   def replaced(u: UnversionedCoordinate, r: Replacements): Option[(Label, Language)] =
     r.get(u).map { rr =>

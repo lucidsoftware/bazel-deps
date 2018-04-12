@@ -1,13 +1,16 @@
 package com.github.johnynek.bazel_deps
 
+import com.github.johnynek.bazel_deps.IO.Path
+import java.net.URI
 import org.typelevel.paiges.Doc
 
 object Target {
-  def renderList[T](front: Doc, l: List[T], back: Doc)(show: T => Doc): Doc =
-    if (l.isEmpty) Doc.empty
-    else {
+  def renderList[T](front: Doc, l: List[T], back: Doc, indent: Int = 4)(show: T => Doc): Doc =
+    if (l.isEmpty) {
+      Doc.empty
+    } else {
       val spreadParts = Doc.intercalate(Doc.comma + Doc.line, l.map(show))
-      front + (Doc.line + spreadParts).nested(4) + Doc.line + back
+      spreadParts.bracketBy(front, back, indent)
     }
 
   def quote(s: String): Doc =
@@ -53,85 +56,169 @@ object Target {
 
 case class Target(
   lang: Language,
-  name: Label,
-  kind: Target.Kind = Target.Library,
-  deps: Set[Label] = Set.empty,
-  jars: Set[Label] = Set.empty,
-  sources: Target.SourceList = Target.SourceList.Empty,
-  exports: Set[Label] = Set.empty,
-  runtimeDeps: Set[Label] = Set.empty,
+  name: String,
+  licenses: Set[String],
+  jarUrls: Set[URI],
+  jarSha256: Sha256Value,
+  srcjarUrls: Option[Set[URI]] = None,
+  srcjarSha256: Option[Sha256Value] = None,
+  deps: Option[Set[Label]] = None,
+  runtimeDeps: Option[Set[Label]] = None,
+  testOnly: Option[Boolean] = None,
+  exports: Option[Set[Label]] = None,
+  neverLink: Option[Boolean] = None,
+  generatedRuleName: Option[String] = None,
+  generatedLinkableRuleName: Option[String] = None,
+  defaultVisbility: Option[String] = Some("//visibility:public"),
+  extraBuildFileContent: Option[String] = None,
   processorClasses: Set[ProcessorClass] = Set.empty,
-  licenses: Set[String] = Set.empty) {
+  comment: Option[String] = None,
+  bindInfo: (Label, String)
+) {
 
-  def toDoc: Doc = {
+  def toDoc() = {
     import Target._
     /**
      * e.g.
      * scala_library(
-     *     name = "foo",
-     *     deps = [ ],
-     *     exports = [ ],
-     *     runtime_deps = [ ],
-     *     visibility = ["//visibility:public"]
+     * name = "foo",
+     * deps = [ ],
+     * exports = [ ],
+     * runtime_deps = [ ],
+     * visibility = ["//visibility:public"]
      * )
      */
 
-    val langName = lang match {
-      case Language.Java => "java"
-      case Language.Scala(_, _) => "scala"
-    }
-
-    val targetType = Doc.text(s"${langName}_${kind}")
-
-    def sortKeys(tt: Doc, name: String, items: List[(String, Doc)]): Doc = {
-      // everything has a name
-      val nm = ("name", quote(name))
+    def sortKeys(prefix: Doc, suffix: Doc,  assignmentOperator: String, items: List[(String, Doc)]): Doc = {
       implicit val ordDoc: Ordering[Doc] = Ordering.by { d: Doc => d.renderWideStream.mkString }
       val sorted = items.collect { case (s, d) if !(d.isEmpty) => (s, d) }.sorted
 
-      renderList(tt + Doc.text("("), nm :: sorted, Doc.text(")")) { case (k, v) =>
-        k +: " = " +: v
-      } + Doc.line
+      renderList(prefix, sorted, suffix) { case (k, v) =>
+        k +: s"${assignmentOperator} " +: v
+      }
     }
 
-    def labelList(ls: Set[Label]): Doc =
-      renderList(Doc.text("["), ls.toList.map(_.asStringFrom(name.path)).sorted, Doc.text("]"))(quote)
+    def labelList(ls: Set[Label]): Doc = {
+      renderList(Doc.text("["), ls.toList.map(_.asStringFrom(Path(Nil))).sorted, Doc.text("]"))(quote)
+    }
 
-    def renderExportedPlugins(pcs: Set[ProcessorClass]): Doc =
-      renderList(Doc.text("["), pcs.toList.map(pc => ":" + getPluginTargetName(pcs, pc)).sorted, Doc.text("]"))(quote)
+    def renderExportedPlugins(pcs: Set[ProcessorClass]): Doc = {
+      if (pcs.isEmpty) {
+        Doc.empty
+      } else {
+        val exportedPlugins = renderList(
+          Doc.text("["),
+          pcs.toList.map(pc => ":" + getPluginTargetName(pcs, pc)).sorted,
+          Doc.text("]")
+        )(quote)
 
-    def getPluginTargetName(pcs: Set[ProcessorClass], pc: ProcessorClass) =
-      if (pcs.size == 1) s"${name.name}_plugin"
-      else s"${name.name}_plugin_${fqnToLabelFragment(pc.asString)}"
+        sortKeys(Doc.text("java_library("), Doc.text(")"), "=", List(
+          "name" -> Doc.text(name),
+          "exported_plugins" -> exportedPlugins
+        ))
+      }
+    }
 
-    def renderPlugins(pcs: Set[ProcessorClass], exports: Set[Label], licenses: Set[String]): Doc =
-      if (pcs.isEmpty) Doc.empty
-      else processorClasses.toList.sortBy(_.asString).map(renderPlugin(pcs, _, exports, licenses)).reduce((d1, d2) => d1 + d2)
+    def getPluginTargetName(pcs: Set[ProcessorClass], pc: ProcessorClass) = {
+      if (pcs.size == 1) {
+        s"${name}_plugin"
+      } else {
+        s"${name}_plugin_${fqnToLabelFragment(pc.asString)}"
+      }
+    }
 
-    def renderPlugin(pcs: Set[ProcessorClass], pc: ProcessorClass, exports: Set[Label], licenses: Set[String]): Doc =
-      sortKeys(Doc.text("java_plugin"), getPluginTargetName(pcs, pc), List(
-        "deps" -> labelList(exports ++ jars),
-        "licenses" -> renderLicenses(licenses),
-        "processor_class" -> quote(pc.asString),
-        visibility()
-      )) + Doc.line
+    def renderPlugins(pcs: Set[ProcessorClass], exports: Set[Label], licenses: Set[String]): Doc = {
+      if (pcs.isEmpty) {
+        Doc.empty
+      } else {
+        processorClasses.toList.sortBy(_.asString).map(renderPlugin(pcs, _, exports, licenses)).reduce((d1, d2) => d1 + d2)
+      }
+    }
 
-    def visibility(): (String, Doc) =
-      "visibility" -> renderList(Doc.text("["), List("//visibility:public"), Doc.text("]"))(quote)
+    def renderPlugin(pcs: Set[ProcessorClass], pc: ProcessorClass, exports: Set[Label], licenses: Set[String]): Doc = {
+      val pluginName = getPluginTargetName(pcs, pc)
+      sortKeys(
+        Doc.text("java_plugin("),
+        Doc.text(")"),
+        pluginName, List(
+          "deps" -> labelList(exports + Label(None, Path(Nil), ":jar")),
+          "licenses" -> renderLicenses(licenses),
+          "processor_class" -> quote(pc.asString)
+        ) ++ renderVisibility()
+      ) + Doc.line
+    }
 
-    def renderLicenses(licenses: Set[String]): Doc =
-      if (!licenses.isEmpty) renderList(Doc.text("["), licenses.toList, Doc.text("]"))(quote)
-      else Doc.empty
+    def renderBoolean(boolean: Boolean): Doc = {
+      val pythonBoolean = if (boolean) {
+        "True"
+      } else {
+        "False"
+      }
 
-    sortKeys(targetType, name.name, List(
-      visibility(),
-      "deps" -> labelList(deps),
-      "licenses" -> renderLicenses(licenses),
-      "srcs" -> sources.render,
-      "jars" -> labelList(jars),
-      "exports" -> labelList(exports),
-      "runtime_deps" -> labelList(runtimeDeps),
-      "exported_plugins" -> renderExportedPlugins(processorClasses)
-    )) + renderPlugins(processorClasses, exports, licenses) + Doc.line
+      quote(pythonBoolean)
+    }
+
+    def renderSha256(sha256Value: Sha256Value): Doc = {
+      quote(sha256Value.toHex)
+    }
+
+    def renderUriList(uriList: Iterable[URI]): Doc = {
+      renderList(Doc.text("["), uriList.toList.map(_.toString), Doc.text("]"))(quote)
+    }
+
+    def renderVisibility(): Option[(String, Doc)] = {
+      defaultVisbility.map { defaultVisbility =>
+        "default_visibility" -> renderList(Doc.text("["), List(defaultVisbility), Doc.text("]"))(quote)
+      }
+    }
+
+    def renderLicenses(licenses: Set[String]): Doc = {
+      if (licenses.nonEmpty) {
+        renderList(Doc.text("["), licenses.toList, Doc.text("]"))(quote)
+      } else {
+        Doc.empty
+      }
+    }
+
+    val importArgs = List(
+      "name" -> quote(name),
+      // TODO: Can we get a version of this rule that doesn't require a license to be set?
+      "licenses" -> renderLicenses(if (licenses.nonEmpty) licenses else Set("notice")),
+      "jar_urls" -> renderUriList(jarUrls),
+      "jar_sha256" -> renderSha256(jarSha256)
+    ) ++
+      srcjarUrls.map("srcjar_urls" -> renderUriList(_)) ++
+      srcjarSha256.map("srcjar_sha256" -> renderSha256(_)) ++
+      deps.map("deps" -> labelList(_)) ++
+      runtimeDeps.map("runtime_deps" -> labelList(_)) ++
+      testOnly.map("testonly_" -> renderBoolean(_)) ++
+      exports.map("exports" -> labelList(_)) ++
+      neverLink.map("neverlink" -> renderBoolean(_)) ++
+      generatedRuleName.map("generated_rule_name" -> quote(_)) ++
+      generatedLinkableRuleName.map("generated_linkable_rule_name" -> quote(_)) ++
+      renderVisibility() ++
+      exports.map("extra_build_file_content" -> renderPlugins(processorClasses, _, licenses).+(renderExportedPlugins(processorClasses)))
+
+    val (label, bindName) = bindInfo
+    val bindArgs = List(
+      "actual" -> quote(label.asStringFrom(Path(Nil))),
+      "name" -> quote(bindName)
+    )
+
+    def renderJson(items: List[(String, Doc)]): Doc = {
+      val itemsWithQuotedKeys = items.map { case (key, value) =>
+        s""""${key}"""" -> value
+      }
+      sortKeys(Doc.text("{"), Doc.text("}"), ":", itemsWithQuotedKeys)
+    }
+
+    // TODO: Break into lang, java_import_external args, and bind args
+    val options = List(
+      "lang" -> quote(lang.asString),
+      "import_args" -> renderJson(importArgs),
+      "bind_args" -> renderJson(bindArgs)
+    )
+
+    Doc.text(comment.getOrElse("")) + renderJson(options)
   }
 }

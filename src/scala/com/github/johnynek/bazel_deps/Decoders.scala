@@ -14,6 +14,7 @@ object Decoders {
     Decoder.decodeString.emap {
       case "exports" => Right(Transitivity.Exports)
       case "runtime_deps" => Right(Transitivity.RuntimeDeps)
+      case "deps" => Right(Transitivity.Deps)
       case other => Left(s"unrecogized transitivity: $other")
     }
   implicit val resolverCacheDecoder: Decoder[ResolverCache] =

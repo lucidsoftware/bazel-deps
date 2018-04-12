@@ -85,17 +85,18 @@ object MakeDeps {
         def replaced(m: MavenCoordinate): Boolean =
           model.getReplacements.get(m.unversioned).isDefined
 
-        val shas = resolver.getShas(normalized.nodes.filterNot(replaced))
-        // build the workspace
-        def ws = Writer.workspace(g.depsFile, normalized, duplicates, shas, model)
-        // build the BUILDs in thirdParty
-        val targets = Writer.targets(normalized, model) match {
+        val jarInfo = resolver.getCoordinateInfo(normalized.nodes.filterNot(replaced), "jar")
+        val srcjarInfo = resolver.getCoordinateInfo(normalized.nodes.filterNot(replaced), "jar", Some("sources"))
+        val targets = Writer.targets(normalized, model, duplicates, jarInfo, srcjarInfo) match {
           case Right(t) => t
           case Left(err) =>
             System.err.println(s"""Could not find explicit exports named by: ${err.mkString(", ")}""")
             System.exit(-1)
             sys.error("exited already")
         }
+
+        // build the workspace
+        def ws = Writer.workspace(g.depsFile, targets)
 
         val formatter: Writer.BuildFileFormatter = g.buildifier match {
           // If buildifier is provided, run it with the unformatted contents on its stdin; it will print the formatted
@@ -125,20 +126,19 @@ object MakeDeps {
         }
 
         if (g.checkOnly) {
-          executeCheckOnly(model, projectRoot, IO.path(workspacePath), ws, targets, formatter)
+          executeCheckOnly(model, projectRoot, IO.path(workspacePath), ws)
         } else {
-          executeGenerate(model, projectRoot, IO.path(workspacePath), ws, targets, formatter)
+          executeGenerate(model, projectRoot, IO.path(workspacePath), ws)
         }
     }
   }
 
-  private def executeCheckOnly(model: Model, projectRoot: File, workspacePath: IO.Path, workspaceContents: String, targets: List[Target], formatter: Writer.BuildFileFormatter): Unit = {
+  private def executeCheckOnly(model: Model, projectRoot: File, workspacePath: IO.Path, workspaceContents: String): Unit = {
     // Build up the IO operations that need to run.
     val io = for {
       wsOK <- IO.compare(workspacePath, workspaceContents)
       wsbOK <- IO.compare(workspacePath.sibling("BUILD"), "")
-      buildsOK <- Writer.compareBuildFiles(model.getOptions.getBuildHeader, targets, formatter)
-    } yield wsOK :: wsbOK :: buildsOK
+    } yield wsOK :: wsbOK :: Nil
 
     // Here we actually run the whole thing
     io.foldMap(IO.fileSystemExec(projectRoot)) match {
@@ -156,16 +156,15 @@ object MakeDeps {
     }
   }
 
-  private def executeGenerate(model: Model, projectRoot: File, workspacePath: IO.Path, workspaceContents: String, targets: List[Target], formatter: Writer.BuildFileFormatter): Unit = {
+  private def executeGenerate(model: Model, projectRoot: File, workspacePath: IO.Path, workspaceContents: String): Unit = {
     // Build up the IO operations that need to run. Till now,
     // nothing was written
     val io = for {
       _ <- IO.recursiveRmF(IO.Path(model.getOptions.getThirdPartyDirectory.parts))
       _ <- IO.mkdirs(workspacePath.parent)
-      _ <- IO.writeUtf8(workspacePath, workspaceContents)
       _ <- IO.writeUtf8(workspacePath.sibling("BUILD"), "")
-      builds <- Writer.createBuildFiles(model.getOptions.getBuildHeader, targets, formatter)
-    } yield builds
+      workspace <- IO.writeUtf8(workspacePath, workspaceContents)
+    } yield workspace
 
     // Here we actually run the whole thing
     io.foldMap(IO.fileSystemExec(projectRoot)) match {
@@ -173,7 +172,7 @@ object MakeDeps {
         System.err.println(err)
         System.exit(-1)
       case Success(builds) =>
-        println(s"wrote ${targets.size} targets in $builds BUILD files")
+        println(s"wrote workspace file")
     }
   }
 }

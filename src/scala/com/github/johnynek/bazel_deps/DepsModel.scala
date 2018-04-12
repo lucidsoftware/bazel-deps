@@ -1,14 +1,15 @@
 package com.github.johnynek.bazel_deps
 
-import java.io.{ File, BufferedReader, FileReader }
+import java.io.{BufferedReader, File, FileReader}
+import java.net.URI
 import scala.util.{Failure, Success, Try}
 import scala.util.control.NonFatal
-
 import org.typelevel.paiges.Doc
-import cats.kernel.{ CommutativeMonoid, Monoid, Semigroup }
+import cats.kernel.{CommutativeMonoid, Monoid, Semigroup}
 import cats.implicits._
-import cats.data.{ Validated, ValidatedNel, Ior, NonEmptyList }
-import cats.{ Applicative, Functor, Foldable, Traverse }
+import cats.data.{Ior, NonEmptyList, Validated, ValidatedNel}
+import cats.{Applicative, Foldable, Functor, Traverse}
+import org.eclipse.aether.artifact.{Artifact, DefaultArtifact}
 
 /**
  * These should be upstreamed to paiges
@@ -169,14 +170,15 @@ object ArtifactOrProject {
 
 case class Subproject(asString: String)
 case class Version(asString: String)
-case class Sha1Value(toHex: String)
+case class Sha256Value(toHex: String)
 case class MavenServer(id: String, contentType: String, url: String) {
   def toDoc: Doc =
     packedYamlMap(
       List(("id", quoteDoc(id)), ("type", quoteDoc(contentType)), ("url", Doc.text(url))))
 }
-case class ResolvedSha1Value(sha1Value: Sha1Value, serverId: String)
+case class ResolvedSha256Value(sha256Value: Sha256Value, serverId: String)
 case class ProcessorClass(asString: String)
+case class JarInfo(jarUrls: Set[URI], sha256Value: Sha256Value)
 
 object Version {
   private def isNum(c: Char): Boolean =
@@ -278,6 +280,10 @@ case class MavenCoordinate(group: MavenGroup, artifact: MavenArtifactId, version
     Dependencies(Map(group ->
       Map(ArtifactOrProject(artifact.asString) ->
         ProjectRecord(l, Some(version), None, None, None, None))))
+
+  def toArtifact(extension: String, classifier: Option[String]): Artifact = {
+    new DefaultArtifact(group.asString, artifact.asString, classifier.getOrElse(null), extension, version.asString)
+  }
 }
 
 object MavenCoordinate {
@@ -405,6 +411,7 @@ case class UnversionedCoordinate(group: MavenGroup, artifact: MavenArtifactId) {
       case o => o
     }
   }
+
   def bindTarget(namePrefix: NamePrefix): String = s"//external:${toBindingName(namePrefix)}"
 }
 
@@ -976,6 +983,7 @@ object DirectoryName {
 
 sealed abstract class Transitivity(val asString: String)
 object Transitivity {
+  case object Deps extends Transitivity("deps")
   case object RuntimeDeps extends Transitivity("runtime_deps")
   case object Exports extends Transitivity("exports")
 
@@ -986,6 +994,8 @@ object Transitivity {
         (a, b) match {
           case (RuntimeDeps, t) => t
           case (t, RuntimeDeps) => t
+          case (Deps, t) => t
+          case (t, Deps) => t
           case (Exports, Exports) => Exports
         }
     }
