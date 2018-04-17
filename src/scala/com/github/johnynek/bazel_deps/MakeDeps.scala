@@ -30,7 +30,7 @@ object MakeDeps {
     val workspacePath = g.shaFilePath
     val projectRoot = g.repoRoot.toFile
     val resolverCachePath = model.getOptions.getResolverCache match {
-      case ResolverCache.Local => Paths.get("target/local-repo")
+      case ResolverCache.Local => g.repoRoot.resolve("target/local-repo")
       case ResolverCache.BazelOutputBase =>
         Try(Process(List("bazel", "info", "output_base"), projectRoot) !!) match {
           case Success(path) => Paths.get(path.trim, "bazel-deps/local-repo")
