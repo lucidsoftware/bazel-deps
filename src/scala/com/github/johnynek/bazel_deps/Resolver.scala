@@ -94,6 +94,7 @@ class Resolver(servers: List[MavenServer], resolverCachePath: Path) {
     }
     collectRequest.setRoot(new Dependency(new DefaultArtifact(m.asString), "", false, exclusions))
     collectRequest.setRepositories(repositories)
+    println(s"Collecting dependencies for coordinate: $m")
     system.collectDependencies(session, collectRequest);
   }
 
@@ -131,6 +132,7 @@ class Resolver(servers: List[MavenServer], resolverCachePath: Path) {
         mavenCoordinates,
         Try {
           val artifactResults = mavenCoordinates.map { coordinate =>
+            println(s"Resolving coordinate: $coordinate")
             Try {
               system.resolveArtifact(
                 session,
@@ -140,6 +142,7 @@ class Resolver(servers: List[MavenServer], resolverCachePath: Path) {
           }
 
           mavenCoordinates.zip(artifactResults).collect { case (coord, Success(result)) =>
+            println(s"Resovling artifact info for coordinate: $coord")
             val info = getFile(coord, ext, result)
               .flatMap { file =>
                 toSha(file).map { sha256Value =>
