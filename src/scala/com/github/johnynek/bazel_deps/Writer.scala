@@ -75,17 +75,10 @@ object Writer {
       |        java_import_external(**import_args)
       |    else:
       |    #elif lang.startswith("scala"):
-      |        # TODO: What attributes does scala_import support? Include only those here.
-      |        if "srcjar_sha256" in import_args:
-      |            import_args.pop("srcjar_sha256")
-      |        if "srcjar_urls" in import_args:
-      |            import_args.pop("srcjar_urls")
       |        if "testonly_" in import_args:
       |            import_args.pop("testonly_")
       |        if "neverlink" in import_args:
       |            import_args.pop("neverlink")
-      |        if "srcjar_urls" in import_args:
-      |            import_args.pop("srcjar_urls")
       |
       |        scala_import_external(**import_args)
       |
