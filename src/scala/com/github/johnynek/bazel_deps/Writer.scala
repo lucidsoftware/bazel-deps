@@ -63,33 +63,8 @@ object Writer {
       .render(80)
 
     s"""# Do not edit. bazel-deps autogenerates this file from ${depsFile}.
-      |load("@io_bazel_rules_scala//scala:scala_maven_import_external.bzl", "scala_import_external", "java_import_external")
-      |
-      |def declare_maven(hash):
-      |    lang = hash.pop("lang")
-      |    import_args = hash["import_args"]
-      |
-      |    # TODO: Change this back once java_import works again
-      |    # if lang == "java":
-      |    if False:
-      |        java_import_external(**import_args)
-      |    else:
-      |    #elif lang.startswith("scala"):
-      |        if "testonly_" in import_args:
-      |            import_args.pop("testonly_")
-      |        if "neverlink" in import_args:
-      |            import_args.pop("neverlink")
-      |
-      |        scala_import_external(**import_args)
-      |
-      |    native.bind(**hash["bind_args"])
-      |
       |def list_dependencies():
       |    return $renderedTargets
-      |def maven_dependencies(callback = declare_maven):
-      |    for hash in list_dependencies():
-      |        callback(hash)
-      |
     """.stripMargin
   }
 
