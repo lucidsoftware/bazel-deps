@@ -2,8 +2,8 @@ workspace(name = "com_github_johnynek_bazel_deps")
 
 git_repository(
     name = "io_bazel_rules_scala",
-    remote = "git://github.com/bazelbuild/rules_scala",
-    commit = "4afc7abc73e4fb688e7c95e7aec43005feb44b0b" # update this as needed
+    remote = "git://github.com/lucidsoftware/rules_scala",
+    commit = "00e75159049d0d22fceda902587d4dfec2d8003f" # update this as needed
 )
 
 load("@io_bazel_rules_scala//scala:toolchains.bzl", "scala_register_toolchains")
