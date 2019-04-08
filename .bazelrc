@@ -1,2 +1,1 @@
-common --incompatible_remove_native_git_repository=false
 common --incompatible_remove_native_http_archive=false
